@@ -1,0 +1,39 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+      - run: npm install --global pnpm@10.32.1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - if: runner.os == 'macOS'
+        run: pnpm setup:desktop
+      - if: runner.os == 'macOS'
+        run: pnpm test:desktop
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: test-evidence-${{ matrix.os }}
+          path: |
+            test-results/
+            desktop-test-results/
+          if-no-files-found: ignore

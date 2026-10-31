@@ -1,0 +1,13 @@
+# Security
+
+This alpha is a single-user local application. Both servers bind to 127.0.0.1. Do not expose them through a public reverse proxy: there is no multi-user authentication or tenant isolation.
+
+The launcher creates a fresh 256-bit API token passed only to child environments; the Next server proxy does not send it to the renderer. The proxy checks Host and Origin; Fastify checks token and Origin. Browser input cannot select an upstream host, filesystem path, or executable. Electron has nodeIntegration disabled, contextIsolation and sandbox enabled, no preload bridge, and denies new windows/external navigation. No API supports arbitrary terminal commands or filesystem writes.
+
+Muse uses the official SDK and CLI's own credentials. All live invocations require a persisted user approval for that task. Even when approved the native session must apply `:read-only`, verified by the SDK; `denyUnmatched` and rejection of extra requests narrow it further. User prompts, model output, and peer handoffs do not grant permissions. This application does not implement a general-purpose safe command classifier. Enforced native restrictions are required, never replaced with a prompt saying 'be safe'. There is no fallback to unrestricted execution.
+
+Model context contains Bot roles, recent 20 group messages, task text and direct-parent result. Group members are intentionally allowed to share group context; avoid putting credentials into chat or the shared directory. API credentials are not stored in workspace JSON. Workspaces and audit logs are plaintext private local files (directory 0700/file 0600 on Unix), not encrypted storage. OS administrators and other software running as the same user remain outside this threat model.
+
+The local shared directory and native sessions are not a VM or OS isolation boundary. The planned VM, independent screens, resource locks and cloud runtime are not implemented. One API process per data directory only; JSON rename serializes writes within that process, not across processes. Data has no automated retention policy in this alpha. Restart fails interrupted tasks and expires approvals instead of replaying them.
+
+Use GitHub private vulnerability reporting if enabled, rather than publishing secrets in issues. Never attach your `.data` directory, credentials, `.env` files, or complete local logs to a public report.

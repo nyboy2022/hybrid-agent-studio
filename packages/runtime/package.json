@@ -1,0 +1,14 @@
+{
+  "name": "@hybrid/runtime",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@muse-code/sdk": "1.4.14"
+  }
+}

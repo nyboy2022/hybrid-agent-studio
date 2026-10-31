@@ -1,0 +1,29 @@
+{
+  "name": "hybrid-agent-studio",
+  "private": true,
+  "version": "0.1.0-alpha.1",
+  "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "node": ">=22.12 <26"
+  },
+  "scripts": {
+    "dev": "node scripts/run.mjs --dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "desktop": "pnpm --filter @hybrid/desktop start",
+    "start": "node scripts/run.mjs",
+    "setup:desktop": "pnpm --filter @hybrid/desktop exec install-electron",
+    "test:desktop": "playwright test --config playwright.desktop.config.ts",
+    "test:muse:live": "tsx scripts/check-muse.mts"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "tsx": "^4.20.6",
+    "vitest": "^4.0.0",
+    "@types/node": "^24.10.0",
+    "@playwright/test": "^1.56.1"
+  },
+  "type": "module"
+}
