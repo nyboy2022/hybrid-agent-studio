@@ -303,3 +303,31 @@ describe("local API boundary", () => {
     }
   });
 });
+
+it("keeps direct conversations distinct from named groups and reuses them after Bot rename", async () => {
+  const f = await fixture();
+  const regular = await f.studio.createGroup({
+    name: f.a.name,
+    botIds: [f.a.id],
+  });
+  const direct = await f.studio.createGroup({
+    name: f.a.name,
+    botIds: [f.a.id],
+    kind: "direct",
+  });
+  expect(direct.id).not.toBe(regular.id);
+  await f.studio.saveBot({ ...f.a, name: "新程序员" }, f.a.id);
+  const again = await f.studio.createGroup({
+    name: "新程序员",
+    botIds: [f.a.id],
+    kind: "direct",
+  });
+  expect(again.id).toBe(direct.id);
+  await expect(
+    f.studio.createGroup({
+      name: "invalid",
+      botIds: [f.a.id, f.b.id],
+      kind: "direct",
+    }),
+  ).rejects.toThrow("一个 Bot");
+});

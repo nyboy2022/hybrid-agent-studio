@@ -20,7 +20,7 @@ async function proxy(
   const { path } = await context.params;
   const route = path.join("/");
   if (
-    !/^(health|state|runtime\/muse|bots(?:\/[\w-]+)?|groups|groups\/[\w-]+\/messages|tasks\/[\w-]+\/handoff|approvals\/[\w-]+)$/.test(
+    !/^(avatars(?:\/[a-f0-9]{64}\.(?:png|jpg|webp|gif))?|health|state|runtime\/muse|bots(?:\/[\w-]+)?|groups|groups\/[\w-]+\/messages|tasks\/[\w-]+\/handoff|approvals\/[\w-]+)$/.test(
       route,
     )
   )
@@ -29,7 +29,7 @@ async function proxy(
     const body = ["POST", "PUT", "DELETE"].includes(req.method)
       ? await req.text()
       : undefined;
-    if (body && body.length > 64000)
+    if (body && body.length > (route === "avatars" ? 750000 : 64000))
       return Response.json({ error: "Body too large" }, { status: 413 });
     const upstream = await fetch(
       `http://127.0.0.1:${process.env.HYBRID_API_PORT || 4310}/${route}`,
@@ -44,11 +44,15 @@ async function proxy(
         signal: AbortSignal.timeout(10000),
       },
     );
-    return new Response(await upstream.text(), {
+    return new Response(await upstream.arrayBuffer(), {
       status: upstream.status,
       headers: {
-        "content-type": "application/json",
-        "cache-control": "no-store",
+        "content-type":
+          upstream.headers.get("content-type") || "application/json",
+        "cache-control": route.startsWith("avatars/")
+          ? "private, max-age=31536000, immutable"
+          : "no-store",
+        "x-content-type-options": "nosniff",
       },
     });
   } catch {

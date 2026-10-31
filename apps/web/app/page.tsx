@@ -1,6 +1,20 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
-import type { Bot, WorkspaceState, Task } from "@hybrid/core";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { Avatar, Bot, WorkspaceState, Task } from "@hybrid/core";
+
+import { BotAvatar } from "./components/BotAvatar";
+
+const defaultAvatar: Avatar = {
+  kind: "text",
+  value: "",
+  background: "#335b86",
+  foreground: "#e0eeff",
+  radius: 30,
+  fit: "cover",
+  scale: 1,
+  x: 0,
+  y: 0,
+};
 
 type BotDraft = Omit<Bot, "id">;
 const freshBot: BotDraft = {
@@ -38,10 +52,66 @@ export default function StudioPage() {
     "chat",
   );
   const [groupId, setGroupId] = useState("");
+  const [showTasks, setShowTasks] = useState(false);
+  const [showMembers, setShowMembers] = useState(false);
+  const [showGroupForm, setShowGroupForm] = useState(false);
+  const groupDialog = useRef<HTMLDialogElement>(null);
+  const messageList = useRef<HTMLDivElement>(null);
+  const followMessages = useRef(true);
   const [text, setText] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState<BotDraft>(freshBot);
+  const avatar = draft.avatar ?? defaultAvatar;
+  function patchAvatar(change: Partial<Avatar>) {
+    setDraft((current) => ({
+      ...current,
+      avatar: { ...(current.avatar ?? defaultAvatar), ...change },
+    }));
+  }
+  async function uploadAvatar(file: File) {
+    await act(async () => {
+      if (
+        !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(
+          file.type,
+        )
+      )
+        throw new Error("请选择 PNG、JPG、WebP 或 GIF 图片");
+      if (file.size > 10 * 1024 * 1024) throw new Error("图片最大 10MB");
+      let blob: Blob = file;
+      if (file.size > 512 * 1024) {
+        if (file.type === "image/gif")
+          throw new Error("动态 GIF 需小于 512KB，以保留动画");
+        const bitmap = await createImageBitmap(file);
+        const canvas = document.createElement("canvas");
+        const ratio = Math.min(1, 512 / Math.max(bitmap.width, bitmap.height));
+        canvas.width = Math.max(1, Math.round(bitmap.width * ratio));
+        canvas.height = Math.max(1, Math.round(bitmap.height * ratio));
+        canvas
+          .getContext("2d")!
+          .drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        bitmap.close();
+        blob = await new Promise<Blob>((resolve, reject) =>
+          canvas.toBlob(
+            (value) =>
+              value ? resolve(value) : reject(new Error("图片转换失败")),
+            "image/webp",
+            0.9,
+          ),
+        );
+      }
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error("图片读取失败"));
+        reader.readAsDataURL(blob);
+      });
+      const { src } = await api<{ src: string }>("avatars", "POST", {
+        dataUrl,
+      });
+      patchAvatar({ kind: "image", value: src, scale: 1, x: 0, y: 0 });
+    });
+  }
   const [editing, setEditing] = useState<string>();
   const [groupName, setGroupName] = useState("");
   const [members, setMembers] = useState<string[]>([]);
@@ -67,6 +137,43 @@ export default function StudioPage() {
     }, 750);
     return () => clearInterval(timer);
   }, [refresh]);
+  useEffect(() => {
+    if (showGroupForm) groupDialog.current?.showModal();
+    else groupDialog.current?.close();
+  }, [showGroupForm]);
+  const conversationMessages =
+    state?.messages.filter((m) => m.groupId === groupId) ?? [];
+  const lastMessage = conversationMessages.at(-1);
+  useEffect(() => {
+    if (followMessages.current && messageList.current) {
+      messageList.current.scrollTop = messageList.current.scrollHeight;
+    }
+  }, [groupId, lastMessage?.id, lastMessage?.text]);
+  function selectGroup(id: string) {
+    setGroupId(id);
+    setView("chat");
+    setShowTasks(false);
+    setShowMembers(false);
+    setHandoff(undefined);
+    followMessages.current = true;
+  }
+  async function openBot(bot: Bot) {
+    const existing = state?.groups.find(
+      (g) => g.kind === "direct" && g.botIds[0] === bot.id,
+    );
+    if (existing) {
+      selectGroup(existing.id);
+      return;
+    }
+    await act(async () => {
+      const created = await api<{ id: string }>("groups", "POST", {
+        name: bot.name,
+        kind: "direct",
+        botIds: [bot.id],
+      });
+      selectGroup(created.id);
+    });
+  }
   async function act(action: () => Promise<unknown>) {
     setBusy(true);
     setError("");
@@ -89,71 +196,198 @@ export default function StudioPage() {
   return (
     <div className="shell">
       <aside className="sidebar">
-        <a className="brand" href="/">
-          <span className="brand-icon">H</span>
-          <span>
-            HYBRID<span className="brand-sub">AGENT STUDIO</span>
-          </span>
-        </a>
-        <div className="workspace-label">
-          个人工作区 <span className="live-dot" />
-        </div>
-        <nav aria-label="主导航">
+        <div className="sidebar-heading">
+          <a className="brand" href="/" aria-label="Hybrid Agent Studio">
+            <span className="brand-icon">h</span>
+            <span className="brand-name">Hybrid</span>
+          </a>
           <button
+            className="icon-button new-chat"
+            title="新建群聊"
+            aria-label="新建群聊"
+            onClick={() => setShowGroupForm(true)}
+          >
+            ＋
+          </button>
+        </div>
+        <div className="sidebar-conversations">
+          <div className="list-label">BOTS</div>
+          {state?.bots.map((bot) => {
+            const direct = state.groups.find(
+              (g) => g.kind === "direct" && g.botIds[0] === bot.id,
+            );
+            const last = state.messages
+              .filter((m) => m.groupId === direct?.id)
+              .at(-1);
+            return (
+              <button
+                key={bot.id}
+                aria-label={`与 ${bot.name} 聊天`}
+                title={bot.name}
+                disabled={busy}
+                className={`conversation-link ${view === "chat" && groupId === direct?.id ? "selected" : ""}`}
+                onClick={() => void openBot(bot)}
+              >
+                <BotAvatar bot={bot} />
+                <span className="conversation-label">
+                  <strong>{bot.name}</strong>
+                  <small>{last?.text || bot.role}</small>
+                </span>
+              </button>
+            );
+          })}
+          {!state?.bots.length && (
+            <button className="sidebar-empty" onClick={() => setView("bots")}>
+              ＋ 创建第一个 Bot
+            </button>
+          )}
+          <div className="list-label group-label">群聊</div>
+          {state?.groups
+            .filter((g) => g.kind !== "direct")
+            .map((g) => {
+              const last = state.messages
+                .filter((m) => m.groupId === g.id)
+                .at(-1);
+              return (
+                <button
+                  key={g.id}
+                  aria-label={`# ${g.name}`}
+                  title={g.name}
+                  className={`conversation-link ${view === "chat" && g.id === groupId ? "selected" : ""}`}
+                  onClick={() => selectGroup(g.id)}
+                >
+                  <span className="avatar group-avatar">#</span>
+                  <span className="conversation-label">
+                    <strong>{g.name}</strong>
+                    <small>
+                      {last?.text || `${g.botIds.length} 位 Bot 成员`}
+                    </small>
+                  </span>
+                </button>
+              );
+            })}
+          <button
+            className="sidebar-empty"
+            aria-label="新建协作群"
+            onClick={() => setShowGroupForm(true)}
+          >
+            ＋ <span>新建协作群</span>
+          </button>
+        </div>
+        <nav className="sidebar-tools" aria-label="工作区管理">
+          <button
+            aria-label="团队群聊"
+            title="团队群聊"
             className={view === "chat" ? "active" : ""}
             onClick={() => setView("chat")}
           >
-            ◈ <span>团队群聊</span>
-            <small>{state?.groups.length || 0}</small>
+            <span aria-hidden="true">◌</span>
+            <span className="tool-label">团队群聊</span>
           </button>
           <button
+            aria-label="我的 Bots"
+            title="管理 Bots"
             className={view === "bots" ? "active" : ""}
             onClick={() => setView("bots")}
           >
-            ◉ <span>我的 Bots</span>
-            <small>{state?.bots.length || 0}</small>
+            <span aria-hidden="true">◉</span>
+            <span className="tool-label">管理 Bots</span>
           </button>
           <button
+            aria-label={`安全审批${approvals.length ? `，${approvals.length} 项待处理` : ""}`}
+            title="安全审批"
             className={view === "approvals" ? "active" : ""}
             onClick={() => setView("approvals")}
           >
-            ◇ <span>安全审批</span>
-            <small>{approvals.length}</small>
+            <span aria-hidden="true">◇</span>
+            <span className="tool-label">安全审批</span>
+            {approvals.length > 0 && (
+              <span className="count-badge">{approvals.length}</span>
+            )}
           </button>
           <button
+            aria-label="共享电脑"
+            title="共享电脑"
             className={view === "computer" ? "active" : ""}
             onClick={() => setView("computer")}
           >
-            ▣ <span>共享电脑</span>
-            <small>规划</small>
+            <span aria-hidden="true">▣</span>
+            <span className="tool-label">共享电脑</span>
           </button>
         </nav>
         <div className="sidebar-bottom">
-          <span className="pill">LOCAL FIRST</span>
-          <p>你的模型，你的工作区。</p>
-          <small>v0.1.0-alpha.1 · Apache-2.0</small>
+          <span className="live-dot" />
+          <span>本地工作区</span>
+          <small>开源 Alpha</small>
         </div>
       </aside>
       <main>
         <header>
-          <div>
-            <span className="eyebrow">WORKSPACE / {view.toUpperCase()}</span>
+          <div className="header-title">
             <h1>
-              {
-                {
-                  chat: "团队群聊",
-                  bots: "我的 Bots",
-                  approvals: "安全审批",
-                  computer: "共享电脑",
-                }[view]
-              }
+              {view === "chat"
+                ? (group?.kind === "direct"
+                    ? botName(group.botIds[0])
+                    : group?.name) || "团队群聊"
+                : {
+                    bots: "管理 Bots",
+                    approvals: "安全审批",
+                    computer: "共享电脑",
+                  }[view]}
             </h1>
+            {view === "chat" && group && (
+              <small>
+                {group.botIds.length === 1
+                  ? botName(group.botIds[0])
+                  : `${group.botIds.length} 位 Bot 成员`}
+              </small>
+            )}
           </div>
-          <div className="status">
-            <span className="live-dot" /> 本地运行{" "}
-            <span className="muted">/ Phase 01</span>
-          </div>
+          {view === "chat" && group && (
+            <div className="header-actions">
+              <button
+                aria-expanded={showMembers}
+                onClick={() => setShowMembers(!showMembers)}
+              >
+                成员
+              </button>
+              <button
+                aria-label="任务"
+                aria-expanded={showTasks}
+                onClick={() => setShowTasks(!showTasks)}
+              >
+                任务
+                {tasks.length > 0 && (
+                  <span className="button-count">{tasks.length}</span>
+                )}
+              </button>
+            </div>
+          )}
         </header>
+        {view === "chat" && showMembers && group && (
+          <section className="members-panel" aria-label="群成员">
+            <div>
+              <strong>群成员</strong>
+              <button
+                className="icon-button"
+                aria-label="关闭成员列表"
+                onClick={() => setShowMembers(false)}
+              >
+                ×
+              </button>
+            </div>
+            {group.botIds.map((id) => (
+              <p key={id}>
+                <BotAvatar
+                  bot={state?.bots.find((b) => b.id === id)}
+                  name={botName(id)}
+                  className="small"
+                />
+                {botName(id)}
+              </p>
+            ))}
+          </section>
+        )}
         {error && (
           <div role="alert" className="error">
             {error}
@@ -167,18 +401,15 @@ export default function StudioPage() {
             {view === "bots" && (
               <section className="content">
                 <div className="section-intro">
-                  <h2>为每一项工作，找到合适的搭档。</h2>
-                  <p>
-                    每个 Bot
-                    有自己的角色、模型和操作会话；当前支持本地只读运行。
-                  </p>
+                  <h2>你的 Bots</h2>
+                  <p>设置角色与模型，点击左侧 Bot 开始聊天。</p>
                 </div>
                 <div className="two-col">
                   <div className="bot-grid">
-                    {state.bots.map((bot) => (
+                    {state?.bots.map((bot) => (
                       <article className="card" key={bot.id}>
                         <div className="card-top">
-                          <div className="avatar">{bot.name.slice(0, 1)}</div>
+                          <BotAvatar bot={bot} />
                           <span className="pill">
                             {bot.runtime === "demo" ? "演示模型" : "MUSE CODE"}
                           </span>
@@ -246,6 +477,210 @@ export default function StudioPage() {
                         placeholder="例如：程序员"
                       />
                     </label>
+                    <details className="avatar-editor">
+                      <summary>
+                        <span>自定义头像</span>
+                        <BotAvatar bot={draft} />
+                      </summary>
+                      <div className="avatar-preview">
+                        <BotAvatar bot={draft} />
+                        <small>预览</small>
+                      </div>
+                      <div
+                        className="segmented"
+                        role="group"
+                        aria-label="头像类型"
+                      >
+                        {(
+                          [
+                            ["text", "文字"],
+                            ["emoji", "Emoji"],
+                            ["image", "图片"],
+                          ] as const
+                        ).map(([kind, label]) => (
+                          <button
+                            type="button"
+                            key={kind}
+                            aria-pressed={avatar.kind === kind}
+                            onClick={() =>
+                              patchAvatar({
+                                kind,
+                                value: kind === "emoji" ? "🤖" : "",
+                                scale: 1,
+                                x: 0,
+                                y: 0,
+                              })
+                            }
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      {avatar.kind === "image" ? (
+                        <>
+                          <label>
+                            上传头像
+                            <input
+                              aria-label="上传头像"
+                              type="file"
+                              accept="image/png,image/jpeg,image/webp,image/gif"
+                              disabled={busy}
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) void uploadAvatar(file);
+                                e.target.value = "";
+                              }}
+                            />
+                          </label>
+                          <small>
+                            PNG / JPG / WebP / GIF。静态图片最大
+                            10MB，自动优化；动态 GIF 最大 512KB。
+                          </small>
+                          {avatar.value && (
+                            <>
+                              <label>
+                                图片适配
+                                <select
+                                  aria-label="图片适配"
+                                  value={avatar.fit}
+                                  onChange={(e) =>
+                                    patchAvatar({
+                                      fit: e.target.value as Avatar["fit"],
+                                    })
+                                  }
+                                >
+                                  <option value="cover">填满头像</option>
+                                  <option value="contain">完整显示</option>
+                                </select>
+                              </label>
+                              <label>
+                                缩放
+                                <input
+                                  aria-label="头像缩放"
+                                  type="range"
+                                  min="1"
+                                  max="3"
+                                  step="0.05"
+                                  value={avatar.scale}
+                                  onChange={(e) =>
+                                    patchAvatar({
+                                      scale: Number(e.target.value),
+                                    })
+                                  }
+                                />
+                              </label>
+                              <label>
+                                水平位置
+                                <input
+                                  aria-label="头像水平位置"
+                                  type="range"
+                                  min="-50"
+                                  max="50"
+                                  value={avatar.x}
+                                  onChange={(e) =>
+                                    patchAvatar({ x: Number(e.target.value) })
+                                  }
+                                />
+                              </label>
+                              <label>
+                                垂直位置
+                                <input
+                                  aria-label="头像垂直位置"
+                                  type="range"
+                                  min="-50"
+                                  max="50"
+                                  value={avatar.y}
+                                  onChange={(e) =>
+                                    patchAvatar({ y: Number(e.target.value) })
+                                  }
+                                />
+                              </label>
+                            </>
+                          )}
+                        </>
+                      ) : (
+                        <label>
+                          {avatar.kind === "emoji" ? "Emoji 头像" : "头像文字"}
+                          <input
+                            maxLength={16}
+                            value={avatar.value}
+                            placeholder={
+                              avatar.kind === "emoji"
+                                ? "🦊"
+                                : "默认使用 Bot 名称"
+                            }
+                            onChange={(e) =>
+                              patchAvatar({ value: e.target.value })
+                            }
+                          />
+                        </label>
+                      )}
+                      <div className="avatar-colors">
+                        <label>
+                          背景颜色
+                          <input
+                            type="color"
+                            value={avatar.background}
+                            onChange={(e) =>
+                              patchAvatar({ background: e.target.value })
+                            }
+                          />
+                        </label>
+                        <label>
+                          文字颜色
+                          <input
+                            type="color"
+                            value={avatar.foreground}
+                            onChange={(e) =>
+                              patchAvatar({ foreground: e.target.value })
+                            }
+                          />
+                        </label>
+                      </div>
+                      <label>
+                        圆角
+                        <input
+                          aria-label="头像圆角"
+                          type="range"
+                          min="0"
+                          max="50"
+                          value={avatar.radius}
+                          onChange={(e) =>
+                            patchAvatar({ radius: Number(e.target.value) })
+                          }
+                        />
+                      </label>
+                      <div className="segmented">
+                        {(
+                          [
+                            [50, "圆形"],
+                            [25, "圆角"],
+                            [0, "方形"],
+                          ] as const
+                        ).map(([radius, label]) => (
+                          <button
+                            type="button"
+                            key={radius}
+                            aria-pressed={avatar.radius === radius}
+                            onClick={() => patchAvatar({ radius })}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDraft((current) => ({
+                            ...current,
+                            avatar: undefined,
+                          }))
+                        }
+                      >
+                        恢复默认头像
+                      </button>
+                    </details>
+
                     <label>
                       角色与职责
                       <textarea
@@ -325,85 +760,34 @@ export default function StudioPage() {
             )}
             {view === "chat" && (
               <div className="chat-layout">
-                <aside className="group-panel">
-                  <h2>
-                    协作群 <span>{state.groups.length}</span>
-                  </h2>
-                  {state.groups.map((g) => (
-                    <button
-                      key={g.id}
-                      className={`group-button ${g.id === groupId ? "selected" : ""}`}
-                      onClick={() => setGroupId(g.id)}
-                    >
-                      <strong># {g.name}</strong>
-                      <small>{g.botIds.length} 位 Bot 成员</small>
-                    </button>
-                  ))}
-                  <form
-                    className="group-form"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      void act(async () => {
-                        const g = await api<{ id: string }>("groups", "POST", {
-                          name: groupName,
-                          botIds: members,
-                        });
-                        setGroupId(g.id);
-                        setGroupName("");
-                        setMembers([]);
-                      });
-                    }}
-                  >
-                    <h3>新建协作群</h3>
-                    <label>
-                      群名称
-                      <input
-                        required
-                        value={groupName}
-                        onChange={(e) => setGroupName(e.target.value)}
-                        placeholder="软件开发团队"
-                      />
-                    </label>
-                    <fieldset>
-                      <legend>选择 Bot 成员</legend>
-                      {state.bots.map((bot) => (
-                        <label className="check" key={bot.id}>
-                          <input
-                            type="checkbox"
-                            checked={members.includes(bot.id)}
-                            onChange={(e) =>
-                              setMembers(
-                                e.target.checked
-                                  ? [...members, bot.id]
-                                  : members.filter((id) => id !== bot.id),
-                              )
-                            }
-                          />
-                          {bot.name}
-                        </label>
-                      ))}
-                    </fieldset>
-                    <button disabled={busy || !members.length}>创建群聊</button>
-                  </form>
-                </aside>
                 <section className="conversation">
                   {group ? (
                     <>
-                      <div className="conversation-head">
-                        <h2># {group.name}</h2>
-                        <p>{group.botIds.map(botName).join(" · ")}</p>
-                      </div>
-                      <div className="messages" aria-live="polite">
+                      <div
+                        className="messages"
+                        ref={messageList}
+                        aria-live="polite"
+                        onScroll={(e) => {
+                          const el = e.currentTarget;
+                          followMessages.current =
+                            el.scrollHeight - el.scrollTop - el.clientHeight <
+                            80;
+                        }}
+                      >
                         {state.messages
                           .filter((m) => m.groupId === groupId)
                           .map((m) => (
                             <article
-                              className={`message ${m.senderId === "system" ? "system" : ""}`}
+                              className={`message ${m.senderId === "user" ? "user-message" : m.senderId === "system" ? "system" : ""}`}
                               key={m.id}
                             >
-                              <div className="avatar small">
-                                {botName(m.senderId).slice(0, 1)}
-                              </div>
+                              <BotAvatar
+                                bot={state.bots.find(
+                                  (b) => b.id === m.senderId,
+                                )}
+                                name={botName(m.senderId)}
+                                className="small"
+                              />
                               <div>
                                 <div className="message-meta">
                                   <strong>{botName(m.senderId)}</strong>
@@ -437,6 +821,7 @@ export default function StudioPage() {
                               text,
                             });
                             setText("");
+                            followMessages.current = true;
                           });
                         }}
                       >
@@ -448,10 +833,28 @@ export default function StudioPage() {
                           required
                           value={text}
                           onChange={(e) => setText(e.target.value)}
-                          placeholder="@程序员 帮我分析这个项目…"
+                          placeholder={
+                            group.botIds.length === 1
+                              ? `给 ${botName(group.botIds[0])} 发消息…`
+                              : `给 ${group.name} 发消息，@ 指定 Bot…`
+                          }
                         />
                         <div className="composer-bottom">
-                          <small>@ 指定成员 · Muse 调用需逐次审批</small>
+                          <small>
+                            {approvals.some((a) =>
+                              tasks.some((t) => t.id === a.taskId),
+                            ) ? (
+                              <button
+                                type="button"
+                                className="approval-notice"
+                                onClick={() => setView("approvals")}
+                              >
+                                有任务等待审批 →
+                              </button>
+                            ) : (
+                              "Enter 换行"
+                            )}
+                          </small>
                           <button
                             className="primary"
                             disabled={busy || !text.trim()}
@@ -475,98 +878,114 @@ export default function StudioPage() {
                     </div>
                   )}
                 </section>
-                <aside className="task-panel">
-                  <h2>任务与交接</h2>
-                  <p className="muted">
-                    每条任务链最多 8 次执行，交接深度最多 3 层。
-                  </p>
-                  {tasks
-                    .slice()
-                    .reverse()
-                    .map((task) => (
-                      <article className="task" key={task.id}>
-                        <span className={`task-status ${task.status}`}>
-                          {labels[task.status]}
-                        </span>
-                        <strong>{botName(task.botId)}</strong>
-                        <p>{task.title}</p>
-                        <small>
-                          会话 {task.sessionId.slice(0, 8)}
-                          {task.parentId ? " · 交接任务" : ""}
-                        </small>
-                        {task.error && (
-                          <p className="error-text">{task.error}</p>
-                        )}
-                        {task.status === "completed" && (
-                          <button
-                            onClick={() =>
-                              setHandoff({
-                                taskId: task.id,
-                                botId:
-                                  group?.botIds.find((b) => b !== task.botId) ||
-                                  task.botId,
-                                title: "",
-                              })
+                {showTasks && (
+                  <aside className="task-panel" aria-label="任务与交接">
+                    <div className="dialog-heading">
+                      <h2>任务与交接</h2>
+                      <button
+                        className="icon-button"
+                        aria-label="关闭任务面板"
+                        onClick={() => setShowTasks(false)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <p className="muted">
+                      每条任务链最多 8 次执行，交接深度最多 3 层。
+                    </p>
+                    {tasks
+                      .slice()
+                      .reverse()
+                      .map((task) => (
+                        <article className="task" key={task.id}>
+                          <span className={`task-status ${task.status}`}>
+                            {labels[task.status]}
+                          </span>
+                          <strong>{botName(task.botId)}</strong>
+                          <p>{task.title}</p>
+                          <small>
+                            会话 {task.sessionId.slice(0, 8)}
+                            {task.parentId ? " · 交接任务" : ""}
+                          </small>
+                          {task.error && (
+                            <p className="error-text">{task.error}</p>
+                          )}
+                          {task.status === "completed" && (
+                            <button
+                              onClick={() =>
+                                setHandoff({
+                                  taskId: task.id,
+                                  botId:
+                                    group?.botIds.find(
+                                      (b) => b !== task.botId,
+                                    ) || task.botId,
+                                  title: "",
+                                })
+                              }
+                            >
+                              交接任务 →
+                            </button>
+                          )}
+                        </article>
+                      ))}
+                    {handoff && (
+                      <form
+                        className="card form"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          void act(async () => {
+                            await api(
+                              `tasks/${handoff.taskId}/handoff`,
+                              "POST",
+                              {
+                                botId: handoff.botId,
+                                title: handoff.title,
+                              },
+                            );
+                            setHandoff(undefined);
+                          });
+                        }}
+                      >
+                        <h3>任务交接</h3>
+                        <label>
+                          交接给
+                          <select
+                            aria-label="交接给"
+                            value={handoff.botId}
+                            onChange={(e) =>
+                              setHandoff({ ...handoff, botId: e.target.value })
                             }
                           >
-                            交接任务 →
-                          </button>
-                        )}
-                      </article>
-                    ))}
-                  {handoff && (
-                    <form
-                      className="card form"
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        void act(async () => {
-                          await api(`tasks/${handoff.taskId}/handoff`, "POST", {
-                            botId: handoff.botId,
-                            title: handoff.title,
-                          });
-                          setHandoff(undefined);
-                        });
-                      }}
-                    >
-                      <h3>任务交接</h3>
-                      <label>
-                        交接给
-                        <select
-                          aria-label="交接给"
-                          value={handoff.botId}
-                          onChange={(e) =>
-                            setHandoff({ ...handoff, botId: e.target.value })
-                          }
+                            {group?.botIds.map((id) => (
+                              <option key={id} value={id}>
+                                {botName(id)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          交接说明
+                          <textarea
+                            required
+                            value={handoff.title}
+                            onChange={(e) =>
+                              setHandoff({ ...handoff, title: e.target.value })
+                            }
+                          />
+                        </label>
+                        <button className="primary" disabled={busy}>
+                          确认交接
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setHandoff(undefined)}
                         >
-                          {group?.botIds.map((id) => (
-                            <option key={id} value={id}>
-                              {botName(id)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        交接说明
-                        <textarea
-                          required
-                          value={handoff.title}
-                          onChange={(e) =>
-                            setHandoff({ ...handoff, title: e.target.value })
-                          }
-                        />
-                      </label>
-                      <button className="primary" disabled={busy}>
-                        确认交接
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setHandoff(undefined)}
-                      >
-                        取消
-                      </button>
-                    </form>
-                  )}
-                </aside>
+                          取消
+                        </button>
+                      </form>
+                    )}
+                  </aside>
+                )}
               </div>
             )}
             {view === "approvals" && (
@@ -692,6 +1111,70 @@ export default function StudioPage() {
           </>
         )}
       </main>
+      <dialog
+        ref={groupDialog}
+        aria-labelledby="group-dialog-title"
+        onClose={() => setShowGroupForm(false)}
+        onCancel={() => setShowGroupForm(false)}
+      >
+        <form
+          className="group-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void act(async () => {
+              const g = await api<{ id: string }>("groups", "POST", {
+                name: groupName,
+                botIds: members,
+              });
+              selectGroup(g.id);
+              setShowGroupForm(false);
+              setGroupName("");
+              setMembers([]);
+            });
+          }}
+        >
+          <div className="dialog-heading">
+            <h2 id="group-dialog-title">新建协作群</h2>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="关闭新建群聊"
+              onClick={() => setShowGroupForm(false)}
+            >
+              ×
+            </button>
+          </div>
+          <label>
+            群名称
+            <input
+              required
+              value={groupName}
+              onChange={(e) => setGroupName(e.target.value)}
+              placeholder="软件开发团队"
+            />
+          </label>
+          <fieldset>
+            <legend>选择 Bot 成员</legend>
+            {state?.bots.map((bot) => (
+              <label className="check" key={bot.id}>
+                <input
+                  type="checkbox"
+                  checked={members.includes(bot.id)}
+                  onChange={(e) =>
+                    setMembers(
+                      e.target.checked
+                        ? [...members, bot.id]
+                        : members.filter((id) => id !== bot.id),
+                    )
+                  }
+                />
+                {bot.name}
+              </label>
+            ))}
+          </fieldset>
+          <button disabled={busy || !members.length}>创建群聊</button>
+        </form>
+      </dialog>
     </div>
   );
 }

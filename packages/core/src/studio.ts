@@ -147,6 +147,7 @@ export class Studio {
     const data = z
       .object({
         name: z.string().trim().min(1).max(80),
+        kind: z.enum(["group", "direct"]).default("group"),
         botIds: z.array(z.string()).min(1).max(20),
       })
       .parse(input);
@@ -156,6 +157,13 @@ export class Studio {
         data.botIds.some((b) => !s.bots.some((bot) => bot.id === b))
       )
         throw new Error("无效的群成员");
+      if (data.kind === "direct") {
+        if (data.botIds.length !== 1) throw new Error("单独对话只能有一个 Bot");
+        const existing = s.groups.find(
+          (g) => g.kind === "direct" && g.botIds[0] === data.botIds[0],
+        );
+        if (existing) return existing;
+      }
       const group = { ...data, id: id() };
       s.groups.push(group);
       audit(s, "group.created", group.id);

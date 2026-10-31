@@ -10,6 +10,7 @@ const studio = new Studio(
   resolve(dataDir, "shared"),
 );
 const app = createServer(studio, {
+  avatarDir: resolve(dataDir, "avatars"),
   token: process.env.HYBRID_API_TOKEN,
   webOrigin: process.env.HYBRID_WEB_ORIGIN,
 });
