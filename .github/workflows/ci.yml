@@ -1,9 +1,13 @@
 name: CI
 on:
   push:
+    branches: [main]
   pull_request:
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   verify:
     strategy:
@@ -36,4 +40,5 @@ jobs:
           path: |
             test-results/
             desktop-test-results/
+          retention-days: 3
           if-no-files-found: ignore
